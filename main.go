@@ -214,6 +214,8 @@ func (r *RAGSystem) Query(ctx context.Context, question string) (string, error) 
 	if err != nil {
 		// fallback to keyword matching if vector search fails
 		fmt.Println("Vector search failedm failinng back to keyword matching...")
+		relevantChunks := r.findRelevantChunks(question, 3)
+		return r.generateAnswer(ctx, question, relevantChunks)
 	}
 
 	var relevantChunks []string
@@ -244,4 +246,53 @@ func (r *RAGSystem) generateAnswer(ctx context.Context, question string, chunks 
 	}
 
 	return response.Choices[0].Content, nil
+}
+
+// findRelevantChunks performs simple keyword-based retrieval
+func (r *RAGSystem) findRelevantChunks(query string, maxChunks int) []string {
+	queryWords := strings.Fields(strings.ToLower(query))
+
+	type chunkScore struct {
+		chunk string
+		score int
+	}
+
+	var scored []chunkScore
+
+	// Score chunks based in keyword overlap
+	for _, doc := range r.documents {
+		for _, chunk := range doc.Chunks {
+			chunkLower := strings.ToLower(chunk)
+			score := 0
+
+			for _, word := range queryWords {
+				if strings.Contains(chunkLower, word) {
+					score++
+				}
+			}
+
+			if score > 0 {
+				scored = append(scored, chunkScore{chunk: chunk, score: score})
+			}
+		}
+	}
+
+	// Sort by score (simple bubble sort for simplicity)
+	for i := range scored {
+		for j := i + 1; j < len(scored); j++ {
+			if scored[j].score > scored[i].score {
+				scored[i], scored[j] = scored[j], scored[i]
+			}
+		}
+	}
+
+	// Return top chunks
+	var result []string
+	limit := min(len(scored), maxChunks)
+
+	for i := range limit {
+		result = append(result, scored[i].chunk)
+	}
+
+	return result
 }
