@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
 	"github.com/ledongthuc/pdf"
+	"github.com/philippgille/chromem-go"
 )
 
 func main() {
@@ -35,13 +37,19 @@ func main() {
 			fmt.Printf("Document has %d chunks\n", len(rag.documents[0].Chunks))
 		}
 
+	} else {
+		fmt.Println("Usage: go tun main.go <path-to-file>")
+		fmt.Println("Example: go run main.go ./sample.pdf")
+
 	}
 
 	_ = rag
 }
 
 type RAGSystem struct {
-	documents []Document
+	documents  []Document
+	vectorDB   *chromem.DB
+	collection *chromem.Collection
 }
 
 type Document struct {
@@ -51,8 +59,19 @@ type Document struct {
 }
 
 func NewRAGSystem() (*RAGSystem, error) {
+	// Initialize puer Go vector database (chromen-go)
+	db := chromem.NewDB()
+
+	// Create collection for documents
+	collection, err := db.CreateCollection("rag-documents", nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create vector collection: %w", err)
+	}
+
 	return &RAGSystem{
-		documents: make([]Document, 0),
+		documents:  make([]Document, 0),
+		vectorDB:   db,
+		collection: collection,
 	}, nil
 }
 
@@ -91,6 +110,28 @@ func (r *RAGSystem) LoadPDF(filePath string) error {
 	}
 
 	r.documents = append(r.documents, doc)
+
+	// Store chunks in vector database
+	ctx := context.Background()
+	var ids []string
+	var contents []string
+	var metadatas []map[string]string
+
+	for i, chunk := range chunks {
+		ids = append(ids, fmt.Sprintf("%s_chunk_%d", filePath, i))
+		contents = append(contents, chunk)
+		metadatas = append(metadatas, map[string]string{
+			"source":   filePath,
+			"chunk_id": fmt.Sprintf("%d", i),
+		})
+	}
+
+	err = r.collection.Add(ctx, ids, nil, metadatas, contents)
+	if err != nil {
+		return fmt.Errorf("failed to store chunks in vector database: %w", err)
+	}
+
+	fmt.Printf("Stored %d chunks in pure Go vector database\n", len(chunks))
 
 	return nil
 }
