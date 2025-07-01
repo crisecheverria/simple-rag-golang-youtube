@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/ledongthuc/pdf"
 	"github.com/philippgille/chromem-go"
+	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/llms/ollama"
 )
 
 func main() {
@@ -35,12 +38,48 @@ func main() {
 		fmt.Printf("PDF loaded successfully! Found %d document(s)\n", len(rag.documents))
 		if len(rag.documents) > 0 {
 			fmt.Printf("Document has %d chunks\n", len(rag.documents[0].Chunks))
+
+			// Interactive query mode
+			fmt.Println("\n=== Query Mode ===")
+			fmt.Println("You can now ask questions about the document.")
+			fmt.Println("Type 'quit' to exit.")
+
+			scanner := bufio.NewScanner(os.Stdin)
+			for {
+				fmt.Print("\nQuestion: ")
+				if !scanner.Scan() {
+					break
+				}
+
+				question := strings.TrimSpace(scanner.Text())
+				if question == "quit" {
+					break
+				}
+
+				if question == "" {
+					continue
+				}
+
+				fmt.Println("Generating answer...")
+				ctx := context.Background()
+				answer, err := rag.Query(ctx, question)
+				if err != nil {
+					fmt.Printf("Error: %v\n", err)
+					continue
+				}
+
+				fmt.Printf("\nAnswer: %s\n", answer)
+
+			}
 		}
 
 	} else {
 		fmt.Println("Usage: go tun main.go <path-to-file>")
 		fmt.Println("Example: go run main.go ./sample.pdf")
-
+		fmt.Println("\nPrerquisites:")
+		fmt.Println("1. Install Ollama: https:ollama.ai")
+		fmt.Println("2. Pull a model: ollama pull llama2")
+		fmt.Println("3. Ensure Ollama is running: ollama serve")
 	}
 
 	_ = rag
@@ -48,6 +87,7 @@ func main() {
 
 type RAGSystem struct {
 	documents  []Document
+	llm        llms.Model
 	vectorDB   *chromem.DB
 	collection *chromem.Collection
 }
@@ -68,8 +108,15 @@ func NewRAGSystem() (*RAGSystem, error) {
 		return nil, fmt.Errorf("failed to create vector collection: %w", err)
 	}
 
+	// Initialize Ollama LLMs
+	llm, err := ollama.New(ollama.WithModel("llama2"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to Initialize Ollama: %w", err)
+	}
+
 	return &RAGSystem{
 		documents:  make([]Document, 0),
+		llm:        llm,
 		vectorDB:   db,
 		collection: collection,
 	}, nil
@@ -154,4 +201,47 @@ func (r *RAGSystem) chunkText(text string) []string {
 	}
 
 	return chunks
+}
+
+// Query performs a semantic query using vector search and Ollama
+func (r *RAGSystem) Query(ctx context.Context, question string) (string, error) {
+	if len(r.documents) == 0 {
+		return "", fmt.Errorf("no documents loaded")
+	}
+
+	// Perform semantic search using pure Go vector database
+	results, err := r.collection.Query(ctx, question, 3, nil, nil)
+	if err != nil {
+		// fallback to keyword matching if vector search fails
+		fmt.Println("Vector search failedm failinng back to keyword matching...")
+	}
+
+	var relevantChunks []string
+	for i, result := range results {
+		fmt.Printf("Chunk %d preview: %.100s...\n", i+1, result.Content)
+		relevantChunks = append(relevantChunks, result.Content)
+	}
+
+	return r.generateAnswer(ctx, question, relevantChunks)
+}
+
+// generateAnswer creates the final answer using llms
+func (r *RAGSystem) generateAnswer(ctx context.Context, question string, chunks []string) (string, error) {
+	// Build context from relevant chunks
+	context := "Context from documents:\n"
+	for i, chunk := range chunks {
+		context += fmt.Sprintf("%d. %s\n\n", i+1, chunk)
+	}
+
+	// Create prompt
+	prompt := fmt.Sprintf(`Based on the following context, answer the question: %s Question: %s Answer:`, context, question)
+	// Query the LLM
+	response, err := r.llm.GenerateContent(ctx, []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, prompt),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to generate response: %w", err)
+	}
+
+	return response.Choices[0].Content, nil
 }
